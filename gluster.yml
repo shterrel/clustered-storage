@@ -1,0 +1,109 @@
+# Building out clustered storage in cloud using CLB and Networks
+#
+---
+- name: Build environment
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: Build an Isolated Network
+      local_action:
+        module: rax_network
+        credentials: rax.py
+        region: "{{ region }}"
+        label: "{{ network_name }}"
+        cidr: "{{ network_cidr }}"
+        state: present
+
+    - name: Storage volume create request
+      local_action:
+        module: rax_cbs
+        credentials: rax.py
+        name: cluster_volume_1
+        description: My Volume
+        volume_type: SSD
+        size: 150
+        region: "{{ region }}"
+        wait: yes
+        state: present
+      register: clb_volume
+
+    - name: Storage volume create request
+      local_action:
+        module: rax_cbs
+        credentials: rax.py
+        name: cluster_volume_2
+        description: My Volume
+        volume_type: SSD
+        size: 150
+        region: "{{ region }}"
+        wait: yes
+        state: present
+      register: clb_volume
+
+    - name: Create cluster servers
+      local_action:
+        module: rax
+        credentials: rax.py
+        name: "{{ cluster_name }}"
+        flavor: "{{ cluster_flavor }}"
+        image: "{{ cluster_server_image }}"
+        disk_config: manual
+        networks:
+          - public
+          - private
+          - "{{ network_name }}"
+        region: "{{ region }}"
+        state: present
+        group: cluster_fs
+        count: 2
+        wait: yes
+        files:
+          /root/.ssh/id_rsa.pub: /root/.ssh/authorized_keys
+      register: rax
+#
+    - name: Add cluster servers to group
+      local_action:
+        module: add_host
+        hostname: "{{ item.name }}"
+        ansible_ssh_host: "{{ item.rax_accessipv4 }}"
+        ansible_ssh_pass: "{{ item.rax_adminpass }}"
+        ansible_ssh_user: root
+        groupname: cluster_fs
+      with_items: rax.success
+      when: rax.action == 'create'
+
+    - name: Storage volume attach request
+      local_action:
+        module: rax_cbs_attachments
+        credentials: rax.py
+        volume: cluster_volume_1
+        server: cluster1
+        device: /dev/xvdd
+        region: DFW
+        wait: yes
+        state: present
+      register: my_volume
+
+    - name: Storage volume attach request
+      local_action:
+        module: rax_cbs_attachments
+        credentials: rax.py
+        volume: cluster_volume_2
+        server: cluster2
+        device: /dev/xvdd
+        region: DFW
+        wait: yes
+        state: present
+      register: my_volume
+#- name: Database Configuration
+#  hosts: database 
+#  roles:
+#    - common
+#    - mysql
+#
+#- name: Web Server Configuration
+#  hosts: web
+#  roles:
+#    - common
+#    - web
