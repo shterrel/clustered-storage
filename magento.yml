@@ -1,0 +1,122 @@
+# This will create Magento Environment in Rackspace Public Cloud
+#
+---
+- name: Build environment
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: Load Balancer create request
+      local_action:
+        module: rax_clb
+        credentials: rax.py
+        name: "{{ clb_name }}"
+        port: 80
+        protocol: HTTP
+        type: PUBLIC
+        timeout: 30
+        region: "{{ region }}"
+        wait: yes
+        state: present
+        meta:
+          app: magento
+      register: clb
+
+    - name: Build an Isolated Network
+      local_action:
+        module: rax_network
+        credentials: rax.py
+        region: "{{ region }}"
+        label: "{{ network_name }}"
+        cidr: "{{ network_cidr }}"
+        state: present
+
+    - name: Create Database Server(s)
+      local_action:
+        module: rax
+        credentials: rax.py
+        name: "{{ db_name }}"
+        flavor: "{{ db_flavor }}"
+        image: "{{ server_image }}"
+        disk_config: manual
+        networks:
+          - public
+          - private
+          - "{{ network_name }}"
+        region: "{{ region }}"
+        state: present
+        group: database
+        count: "{{ db_count }}"
+        wait: yes
+        files:
+          /root/.ssh/digital_id.pub: /root/.ssh/authorized_keys
+      register: rax
+
+    - name: Add database servers to group
+      local_action:
+        module: add_host
+        hostname: "{{ item.name }}"
+        ansible_ssh_host: "{{ item.rax_accessipv4 }}"
+        ansible_ssh_pass: "{{ item.rax_adminpass }}"
+        ansible_ssh_user: root
+        groupname: database
+      with_items: rax.success
+      when: rax.action == 'create'
+
+    - name: Create Web Server(s)
+      local_action:
+        module: rax
+        credentials: rax.py
+        name: "{{ web_name }}"
+        flavor: "{{ web_flavor }}"
+        image: "{{ server_image }}"
+        disk_config: manual
+        networks:
+          - public
+          - private
+          - "{{ network_cidr }}"
+        region: "{{ region }}"
+        state: present
+        group: web
+        count: "{{ web_count }}"
+        wait: yes
+        files:
+          /root/.ssh/digital_id.pub: /root/.ssh/authorized_keys
+      register: rax
+
+    - name: Add web servers to group
+      local_action:
+        module: add_host
+        hostname: "{{ item.name }}"
+        ansible_ssh_host: "{{ item.rax_accessipv4 }}"
+        ansible_ssh_pass: "{{ item.rax_adminpass }}"
+        ansible_ssh_user: root
+        groupname: web
+      with_items: rax.success
+      when: rax.action == 'create'
+
+    - name: Add servers to LB
+      local_action:
+        module: rax_clb_nodes
+        credentials: rax.py
+        load_balancer_id: "{{ clb.balancer.id }}"
+        address: "{{ item.rax_networks.public|first }}"
+        port: 80
+        condition: enabled
+        type: primary
+        wait: yes
+        region: "{{ region }}"
+      with_items: rax.success
+      when: rax.action == 'create'
+
+- name: Database Configuration
+  hosts: database 
+  roles:
+    - common
+    - mysql
+
+- name: Web Server Configuration
+  hosts: web
+  roles:
+    - common
+    - web
